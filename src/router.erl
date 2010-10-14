@@ -10,6 +10,7 @@
 %% --------------------------------------------------------------------
 %% Include files
 %% --------------------------------------------------------------------
+-include("../include/common.hrl").
 
 %% --------------------------------------------------------------------
 %% External exports
@@ -20,30 +21,6 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -record(state, {target}).
-
--record(headers, {
-          connection,
-          accept,
-          host,
-          if_modified_since,
-          if_match,
-          if_none_match,
-          if_range,
-          if_unmodified_since,
-          range,
-          referer,
-          user_agent,
-          accept_ranges,
-          cookie = [],
-          keep_alive,
-          location,
-          content_length,
-          content_type,
-          content_encoding,
-          authorization,
-          transfer_encoding,
-          other = []   %% misc other headers
-         }).
 
 %% ====================================================================
 %% External functions
@@ -184,6 +161,8 @@ receive_response(Socket, Response, Length) ->
 				Length > 0 -> Bin;
 				true -> receive_response(Socket, list_to_binary([Response, Bin]), Length)
 			end;
+	   {error, timeout} ->
+			Response;
 	   {error, closed} ->
 			Response
 	end.
