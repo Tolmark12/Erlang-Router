@@ -21,6 +21,30 @@
 
 -record(state, {target}).
 
+-record(headers, {
+          connection,
+          accept,
+          host,
+          if_modified_since,
+          if_match,
+          if_none_match,
+          if_range,
+          if_unmodified_since,
+          range,
+          referer,
+          user_agent,
+          accept_ranges,
+          cookie = [],
+          keep_alive,
+          location,
+          content_length,
+          content_type,
+          content_encoding,
+          authorization,
+          transfer_encoding,
+          other = []   %% misc other headers
+         }).
+
 %% ====================================================================
 %% External functions
 %% ====================================================================
@@ -31,8 +55,8 @@ start() ->
 stop() ->
 	gen_server:call(?MODULE,stop).
 
-forward_request({request, Client, Request}) ->
-	gen_server:cast(?MODULE, {invoke, Client, Request}).
+forward_request({request, Client, Request, Host}) ->
+	gen_server:call(?MODULE, {invoke, Client, Request, Host}).
 
 %% ====================================================================
 %% Server functions
@@ -60,8 +84,10 @@ init([]) ->
 %%          {stop, Reason, Reply, State}   | (terminate/2 is called)
 %%          {stop, Reason, State}            (terminate/2 is called)
 %% --------------------------------------------------------------------
-handle_call({invoke, Client, Request}, _From, State) ->
+handle_call({invoke, Client, Request, Host}, _From, State) ->
 	spawn(?MODULE, start_relay, [Client, Request, State]),
+	{noreply, State};
+handle_call(_Msg, _From, State) ->
 	{noreply, State}.
 
 %% --------------------------------------------------------------------
@@ -71,7 +97,7 @@ handle_call({invoke, Client, Request}, _From, State) ->
 %%          {noreply, State, Timeout} |
 %%          {stop, Reason, State}            (terminate/2 is called)
 %% --------------------------------------------------------------------
-handle_cast({invoke, Client, Request}, State) ->
+handle_cast({invoke, Client, Request, Host}, State) ->
 	spawn(?MODULE, start_relay, [Client, Request, State]),
 	{noreply, State};
 handle_cast(_Msg, State) ->
@@ -108,25 +134,56 @@ code_change(_OldVsn, State, _Extra) ->
 %% --------------------------------------------------------------------
 start_relay(Client, Request, #state{target=Target}=_State) ->
 	{{host,Host},{port, Port}} = Target,
-	case gen_tcp:connect(Host, Port, [binary, {packet, 0}, {active, true}]) of
+	case gen_tcp:connect(Host, Port, [binary, {packet, http}, {active, false}, {packet_size, 4094}]) of
 		{ok, Server} -> 
 			gen_tcp:send(Server, Request),
-			forward_reply(Server,Client),
-			gen_tcp:close(Server);
+			{Header, Length} = receive_header(Server),
+			gen_tcp:send(Client, Header),
+			Response = receive_response(Server, Length),
+			Result = gen_tcp:send(Client, Response),
+			gen_tcp:close(Server),
+			gen_tcp:close(Client);
 		{error, emfile} ->
 			io:format("router: emfile error~n");
 		{error,econnreset} ->
 			io:format("router: Connection reset~n")
 	end,
 	self()!stop.
+	
+receive_header(Socket) ->
+	receive_header(Socket, "", 0).
+receive_header(Socket, Response, Length) ->
+	case gen_tcp:recv(Socket, 0) of
+		{ok, {http_response,{VersionMajor,VersionMinor},Number,Msg}} ->
+			receive_header(Socket, ["HTTP/",integer_to_list(VersionMajor),".",integer_to_list(VersionMinor),
+			 	" ",integer_to_list(Number) ," ",Msg, "\r\n"], Length);
+		{ok, {http_header, _Num, 'Content-Length', _, Value} } ->
+			{Int, _} = string:to_integer(Value),
+			receive_header(Socket, [Response, "Content-Length: ",Value,"\r\n"], Int);
+		{ok, {http_header, _Num, Key, _, Value} } when is_atom(Key)  ->
+			receive_header(Socket, [Response, atom_to_list(Key),": ",Value,"\r\n"], Length);
+		{ok, {http_header, _Num, Key, _, Value} }  ->
+			receive_header(Socket, [Response, Key,": ",Value,"\r\n"], Length);
+        {ok, {http_error, "\r\n"}} ->
+            receive_header(Socket, Response, Length);
+        {ok, {http_error, "\n"} }->
+            receive_header(Socket, Response, Length);
+        {ok, {http_error, _}} ->
+            bad_request;
+		{ok, http_eoh} ->
+			{[Response, "\r\n"], Length}
+	end.
 
-forward_reply(Server,Client) ->
-	receive
-		{tcp, Server, Bin } ->
-		    gen_tcp:send(Client, Bin),
-			forward_reply(Server, Client);
-		{tcp_closed, Server} ->
-			ok
-		after 1000 ->
-			ok
+receive_response(Socket, Length) ->
+   	receive_response(Socket, <<>>, Length).
+receive_response(Socket, Response, Length) ->
+   	inet:setopts(Socket, [{packet, 0}]),
+	case gen_tcp:recv(Socket, Length, 500) of
+		{ok, Bin} ->
+			if
+				Length > 0 -> Bin;
+				true -> receive_response(Socket, list_to_binary([Response, Bin]), Length)
+			end;
+	   {error, closed} ->
+			Response
 	end.
