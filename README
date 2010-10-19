@@ -1,0 +1,9 @@
+This is an HTTP traffic router.
+
+In order to get up and running do the following:
+
+make all_boot
+
+To run use:
+
+erl -boot ebin/baker
