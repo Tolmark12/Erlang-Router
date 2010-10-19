@@ -14,26 +14,39 @@
 
 %% --------------------------------------------------------------------
 %% External exports
--export([start/0, stop/0, forward_request/1]).
+-export([start/0, stop/0, forward_request/1, update_app/1, add_app/1]).
 -export([start_relay/3]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
--record(state, {target}).
+-record(state, {apps}).
+-record(target, {host,port}).
 
 %% ====================================================================
 %% External functions
 %% ====================================================================
 
 start() ->
-	gen_server:start_link({local, ?MODULE}, ?MODULE,[],[]).
+	Router = gen_server:start_link({local, ?MODULE}, ?MODULE,[],[]),
+	listener:start(),
+	Router.
 
 stop() ->
-	gen_server:call(?MODULE,stop).
+	gen_server:call(?MODULE,stop),
+	ok.
 
-forward_request({request, Client, Request, Host}) ->
-	gen_server:call(?MODULE, {invoke, Client, Request, Host}).
+update_app({AppName, TargetList}) ->
+	AppAtom = to_atom(AppName),
+	gen_server:call(?MODULE, {update_app, {AppAtom, TargetList}}).
+
+add_app({AppName, TargetList}) ->
+	AppAtom = to_atom(AppName),
+	gen_server:call(?MODULE, {add_app, {AppAtom, TargetList}}).
+
+forward_request({request, Client, Request, App}) ->
+	AppAtom = to_atom(App),
+	gen_server:call(?MODULE, {invoke, Client, Request, AppAtom}).
 
 %% ====================================================================
 %% Server functions
@@ -48,8 +61,7 @@ forward_request({request, Client, Request, Host}) ->
 %%          {stop, Reason}
 %% --------------------------------------------------------------------
 init([]) ->
-	Target = {{host,"localhost"},{port, 3000}},
-	{ok, #state{target=Target}}.
+	{ok, #state{apps=[{'localhost:8000',[#target{host="localhost",port=3000},#target{host="127.0.0.1",port=3000}], 1}]}}.
 
 %% --------------------------------------------------------------------
 %% Function: handle_call/3
@@ -61,9 +73,17 @@ init([]) ->
 %%          {stop, Reason, Reply, State}   | (terminate/2 is called)
 %%          {stop, Reason, State}            (terminate/2 is called)
 %% --------------------------------------------------------------------
-handle_call({invoke, Client, Request, Host}, _From, State) ->
-	spawn(?MODULE, start_relay, [Client, Request, State]),
-	{noreply, State};
+handle_call({update_app, {AppName, TargetList}}, _From, #state{apps=AppList}=State) ->
+	NewAppList = lists:keystore(AppName, 1, AppList, {AppName, TargetList, 1}),
+	{noreply, State#state{apps=NewAppList}};
+handle_call({add_app, {AppName, TargetList}}, _From, #state{apps=AppList}=State) ->
+	NewAppList = lists:merge(AppList, [{AppName, TargetList, 1}]),
+	{noreply, State#state{apps=NewAppList}};
+handle_call({invoke, Client, Request, AppName}, _From, State) ->
+	{Target, NewState} = select_target(AppName, State),
+	io:format("Target = ~p~n",[Target]),
+	spawn(?MODULE, start_relay, [Client, Request, Target]),
+	{noreply, NewState};
 handle_call(_Msg, _From, State) ->
 	{noreply, State}.
 
@@ -109,8 +129,24 @@ code_change(_OldVsn, State, _Extra) ->
 %% --------------------------------------------------------------------
 %%% Internal functions
 %% --------------------------------------------------------------------
-start_relay(Client, Request, #state{target=Target}=_State) ->
-	{{host,Host},{port, Port}} = Target,
+select_target(AppName, #state{apps=Apps}=State) ->
+	App = lists:keyfind(AppName, 1, Apps),
+	case App of
+		{_AppName,Targets, CurTarget} ->
+			Target = lists:nth(CurTarget, Targets),
+			if 
+				CurTarget >= length(Targets) ->
+					NextTarget = 1;
+				true -> 
+					NextTarget = CurTarget + 1
+			end,
+			NewAppList = lists:keystore(AppName, 1, Apps, {AppName, Targets, NextTarget}),	
+			{Target, State#state{apps=NewAppList}};
+		false ->
+			{#target{}, State}
+	end.
+
+start_relay(Client, Request, #target{host=Host,port=Port}) ->
 	case gen_tcp:connect(Host, Port, [binary, {packet, http}, {active, false}, {packet_size, 4094}]) of
 		{ok, Server} -> 
 			gen_tcp:send(Server, Request),
@@ -166,3 +202,8 @@ receive_response(Socket, Response, Length) ->
 	   {error, closed} ->
 			Response
 	end.
+	
+to_atom(Value) when is_atom(Value) ->
+	Value;
+to_atom(Value) when is_list(Value) ->
+	list_to_atom(Value).
