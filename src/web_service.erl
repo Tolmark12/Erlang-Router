@@ -62,15 +62,6 @@ init([{listener, Listen}]) ->
 %%          {stop, Reason, Reply, State}   | (terminate/2 is called)
 %%          {stop, Reason, State}            (terminate/2 is called)
 %% --------------------------------------------------------------------
-handle_call({add_target_to_app, [AppName | Params]}, _From, State) ->
-	spawn(router,add_target_to_app, [{AppName, Params}]),
-	{noreply, State};
-handle_call({update_app, [AppName | Params]}, _From, State) ->
-	spawn(router,update_app, [{AppName, Params}]),
-	{noreply, State};
-handle_call({add_app, [AppName | Params]}, _From, State) ->
-	spawn(router, add_app, [{AppName, Params}]),
-	{noreply, State};
 handle_call(_Msg, _From, State) ->
 	{noreply, State}.
 
@@ -81,6 +72,15 @@ handle_call(_Msg, _From, State) ->
 %%          {noreply, State, Timeout} |
 %%          {stop, Reason, State}            (terminate/2 is called)
 %% --------------------------------------------------------------------
+handle_cast({add_target_to_app, [AppName | Params]}, State) ->
+	spawn(router,add_target_to_app, [{AppName, Params}]),
+	{noreply, State};
+handle_cast({update_app, [AppName | Params]}, State) ->
+	spawn(router,update_app, [{AppName, Params}]),
+	{noreply, State};
+handle_cast({add_app, [AppName | Params]}, State) ->
+	spawn(router, add_app, [{AppName, Params}]),
+	{noreply, State};
 handle_cast(stop, #state{listener=Listener}=State) ->
 	gen_tcp:close(Listener),
 	{stop, normal, State};
@@ -137,8 +137,8 @@ loop(Socket) ->
 		_      -> <<>>
 	end,
 	[Call | Params] = string:tokens(HeaderRecord#headers.request_path, "/"),
-	gen_server:call(?MODULE, {util:to_atom(Call), Params}),
-	gen_tcp:send(Socket, ["HTTP/1.1 200 OK\r\n\r\n"]),
+	gen_server:cast(?MODULE, {util:to_atom(Call), Params}),
+	gen_tcp:send(Socket, ["HTTP/1.1 200 OK\r\n\r\n{\"success\":true}"]),
 	gen_tcp:close(Socket),
 	self()!stop.
 
