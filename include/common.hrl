@@ -1,5 +1,6 @@
 -record(headers, {
 		  request_type,
+		  request_path,
           connection,
           accept,
           host,

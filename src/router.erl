@@ -14,13 +14,14 @@
 
 %% --------------------------------------------------------------------
 %% External exports
--export([start/0, stop/0, forward_request/1, update_app/1, add_app/1]).
+-export([start/0, start/1, stop/0, forward_request/1, update_app/1, add_app/1,
+		add_target_to_app/1]).
 -export([start_relay/3]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
--record(state, {apps}).
+-record(state, {apps,listener,web_service}).
 -record(target, {host,port}).
 
 %% ====================================================================
@@ -28,24 +29,31 @@
 %% ====================================================================
 
 start() ->
-	Router = gen_server:start_link({local, ?MODULE}, ?MODULE,[],[]),
-	listener:start(),
-	Router.
-
+	start([{web_service_port, 8080},{listener_port, 8000}]).
+	
+start([{web_service_port, WebSrvPort},{listener_port, ListenPort}]) ->
+	Listen = listener:start(ListenPort),
+	{ok, WebService} = web_service:start(WebSrvPort),
+	gen_server:start_link({local, ?MODULE}, ?MODULE,[{listener,Listen},{web_service, WebService}],[]).
+	
 stop() ->
-	gen_server:call(?MODULE,stop),
+	gen_server:cast(?MODULE,stop),
 	ok.
 
+add_target_to_app({AppName, Target}) ->
+	AppAtom = util:to_atom(AppName),
+	gen_server:call(?MODULE, {add_target_to_app, {AppAtom, Target}}).
+
 update_app({AppName, TargetList}) ->
-	AppAtom = to_atom(AppName),
+	AppAtom = util:to_atom(AppName),
 	gen_server:call(?MODULE, {update_app, {AppAtom, TargetList}}).
 
 add_app({AppName, TargetList}) ->
-	AppAtom = to_atom(AppName),
+	AppAtom = util:to_atom(AppName),
 	gen_server:call(?MODULE, {add_app, {AppAtom, TargetList}}).
 
 forward_request({request, Client, Request, App}) ->
-	AppAtom = to_atom(App),
+	AppAtom = util:to_atom(App),
 	gen_server:call(?MODULE, {invoke, Client, Request, AppAtom}).
 
 %% ====================================================================
@@ -60,8 +68,9 @@ forward_request({request, Client, Request, App}) ->
 %%          ignore               |
 %%          {stop, Reason}
 %% --------------------------------------------------------------------
-init([]) ->
-	{ok, #state{apps=[{'localhost:8000',[#target{host="localhost",port=3000},#target{host="127.0.0.1",port=3000}], 1}]}}.
+init([{listener, Listen}, {web_service, WebService}]) ->
+	{ok, #state{apps=[{'localhost:8000',[#target{host="localhost",port=3000},#target{host="127.0.0.1",port=3000}], 1}],
+		listener=Listen, web_service=WebService}}.
 
 %% --------------------------------------------------------------------
 %% Function: handle_call/3
@@ -73,10 +82,30 @@ init([]) ->
 %%          {stop, Reason, Reply, State}   | (terminate/2 is called)
 %%          {stop, Reason, State}            (terminate/2 is called)
 %% --------------------------------------------------------------------
-handle_call({update_app, {AppName, TargetList}}, _From, #state{apps=AppList}=State) ->
-	NewAppList = lists:keystore(AppName, 1, AppList, {AppName, TargetList, 1}),
+handle_call({add_target_to_app, {AppName, Targets}}, _From, #state{apps=AppList}=State) ->
+	{AppName, TargetList, CurTarget} = lists:keyfind(AppName, 1, AppList),
+	NewTargets = lists:map(fun(T) -> 
+					[TargetHost, TargetPort] = string:tokens(T, ":"),
+					{Port, _} = string:to_integer(TargetPort),
+					{target, TargetHost, Port}
+		 		end, Targets),
+	NewTargetList = lists:append(TargetList, NewTargets),
+	NewAppList = lists:keystore(AppName, 1, AppList, {AppName, NewTargetList, CurTarget}),	
 	{noreply, State#state{apps=NewAppList}};
-handle_call({add_app, {AppName, TargetList}}, _From, #state{apps=AppList}=State) ->
+handle_call({update_app, {AppName, Targets}}, _From, #state{apps=AppList}=State) ->
+	NewTargetList = lists:map(fun(T) -> 
+					[TargetHost, TargetPort] = string:tokens(T, ":"),
+					{Port, _} = string:to_integer(TargetPort),
+					{target, TargetHost, Port}
+		 		end, Targets),
+	NewAppList = lists:keystore(AppName, 1, AppList, {AppName, NewTargetList, 1}),
+	{noreply, State#state{apps=NewAppList}};
+handle_call({add_app, {AppName, Targets}}, _From, #state{apps=AppList}=State) ->
+	TargetList = lists:map(fun(T) -> 
+					[TargetHost, TargetPort] = string:tokens(T, ":"),
+					{Port, _} = string:to_integer(TargetPort),
+					{target, TargetHost, Port}
+		 		end, Targets),
 	NewAppList = lists:merge(AppList, [{AppName, TargetList, 1}]),
 	{noreply, State#state{apps=NewAppList}};
 handle_call({invoke, Client, Request, AppName}, _From, State) ->
@@ -94,9 +123,10 @@ handle_call(_Msg, _From, State) ->
 %%          {noreply, State, Timeout} |
 %%          {stop, Reason, State}            (terminate/2 is called)
 %% --------------------------------------------------------------------
-handle_cast({invoke, Client, Request, Host}, State) ->
-	spawn(?MODULE, start_relay, [Client, Request, State]),
-	{noreply, State};
+handle_cast(stop, #state{listener=Listener, web_service=WebSrv}=State) ->
+	gen_tcp:close(Listener),
+	WebSrv ! stop,
+	{stop, normal, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -147,13 +177,13 @@ select_target(AppName, #state{apps=Apps}=State) ->
 	end.
 
 start_relay(Client, Request, #target{host=Host,port=Port}) ->
-	case gen_tcp:connect(Host, Port, [binary, {packet, http}, {active, false}, {packet_size, 4094}]) of
+	case gen_tcp:connect(Host, Port, [binary, {packet, http}, {active, false}, {packet_size, 4096}]) of
 		{ok, Server} -> 
 			gen_tcp:send(Server, Request),
-			{Header, Length} = receive_header(Server),
+			[{header,Header}, {header_record,HeaderRecord}] = http_handler:receive_header(Server),
 			gen_tcp:send(Client, Header),
-			Response = receive_response(Server, Length),
-			Result = gen_tcp:send(Client, Response),
+			Response = http_handler:receive_body(Server, HeaderRecord#headers.content_length),
+			gen_tcp:send(Client, Response),
 			gen_tcp:close(Server),
 			gen_tcp:close(Client);
 		{error, emfile} ->
@@ -162,48 +192,3 @@ start_relay(Client, Request, #target{host=Host,port=Port}) ->
 			io:format("router: Connection reset~n")
 	end,
 	self()!stop.
-	
-receive_header(Socket) ->
-	receive_header(Socket, "", 0).
-receive_header(Socket, Response, Length) ->
-	case gen_tcp:recv(Socket, 0) of
-		{ok, {http_response,{VersionMajor,VersionMinor},Number,Msg}} ->
-			receive_header(Socket, ["HTTP/",integer_to_list(VersionMajor),".",integer_to_list(VersionMinor),
-			 	" ",integer_to_list(Number) ," ",Msg, "\r\n"], Length);
-		{ok, {http_header, _Num, 'Content-Length', _, Value} } ->
-			{Int, _} = string:to_integer(Value),
-			receive_header(Socket, [Response, "Content-Length: ",Value,"\r\n"], Int);
-		{ok, {http_header, _Num, Key, _, Value} } when is_atom(Key)  ->
-			receive_header(Socket, [Response, atom_to_list(Key),": ",Value,"\r\n"], Length);
-		{ok, {http_header, _Num, Key, _, Value} }  ->
-			receive_header(Socket, [Response, Key,": ",Value,"\r\n"], Length);
-        {ok, {http_error, "\r\n"}} ->
-            receive_header(Socket, Response, Length);
-        {ok, {http_error, "\n"} }->
-            receive_header(Socket, Response, Length);
-        {ok, {http_error, _}} ->
-            bad_request;
-		{ok, http_eoh} ->
-			{[Response, "\r\n"], Length}
-	end.
-
-receive_response(Socket, Length) ->
-   	receive_response(Socket, <<>>, Length).
-receive_response(Socket, Response, Length) ->
-   	inet:setopts(Socket, [{packet, 0}]),
-	case gen_tcp:recv(Socket, Length, 500) of
-		{ok, Bin} ->
-			if
-				Length > 0 -> Bin;
-				true -> receive_response(Socket, list_to_binary([Response, Bin]), Length)
-			end;
-	   {error, timeout} ->
-			Response;
-	   {error, closed} ->
-			Response
-	end.
-	
-to_atom(Value) when is_atom(Value) ->
-	Value;
-to_atom(Value) when is_list(Value) ->
-	list_to_atom(Value).

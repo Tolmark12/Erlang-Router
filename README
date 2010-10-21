@@ -7,3 +7,22 @@ make all_boot
 To run use:
 
 erl -boot ebin/baker
+
+Default ports are 8000 for router and 8080 for the web service.
+
+The RESTful web service can be used as follows:
+
+Add application:
+/add_app/<app_name>
+
+Update application (completely replace targets):
+/update_app/<app_name>/<ip_or_host>:<port>/..
+
+Add targets to application:
+/add_target_to_app/<app_name>/<ip_or_host>:<port>/..
+
+The <ip_or_host>:<port> can be repeated to add multiple targets.
+For example:
+/add_target_to_app/<app_name>/<ip_or_host>:<port>/<ip_or_host>:<port>/<ip_or_host>:<port>/<ip_or_host>:<port>/<ip_or_host>:<port>
+OR
+/update_app/<app_name>/<ip_or_host>:<port>/<ip_or_host>:<port>/<ip_or_host>:<port>/<ip_or_host>:<port>/<ip_or_host>:<port>
