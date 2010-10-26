@@ -23,6 +23,8 @@ Add targets to application:
 
 The <ip_or_host>:<port> can be repeated to add multiple targets.
 For example:
+/add_app/<app_name>/<ip_or_host>:<port>/<ip_or_host>:<port>/<ip_or_host>:<port>/<ip_or_host>:<port>/<ip_or_host>:<port>
+OR
 /add_target_to_app/<app_name>/<ip_or_host>:<port>/<ip_or_host>:<port>/<ip_or_host>:<port>/<ip_or_host>:<port>/<ip_or_host>:<port>
 OR
 /update_app/<app_name>/<ip_or_host>:<port>/<ip_or_host>:<port>/<ip_or_host>:<port>/<ip_or_host>:<port>/<ip_or_host>:<port>

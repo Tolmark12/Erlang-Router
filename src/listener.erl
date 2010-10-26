@@ -21,6 +21,7 @@ start() ->
 	start(8000).
 start(Port) ->
 	{ok, Listen} = gen_tcp:listen(Port, [binary, {packet, http},
+										 {backlog, 1000},
 										 {reuseaddr, true},
 										 {active, false},
 										 {packet_size, 1024}]),

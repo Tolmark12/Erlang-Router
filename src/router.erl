@@ -15,7 +15,7 @@
 %% --------------------------------------------------------------------
 %% External exports
 -export([start/0, start/1, stop/0, forward_request/1, update_app/1, add_app/1,
-		add_target_to_app/1]).
+		add_target_to_app/1, remove_app/1]).
 -export([start_relay/3]).
 
 %% gen_server callbacks
@@ -52,6 +52,10 @@ add_app({AppName, TargetList}) ->
 	AppAtom = util:to_atom(AppName),
 	gen_server:call(?MODULE, {add_app, {AppAtom, TargetList}}).
 
+remove_app(AppName) ->
+	AppAtom = util:to_atom(AppName),
+	gen_server:call(?MODULE, {remove_app, AppAtom}).
+
 forward_request({request, Client, Request, App}) ->
 	AppAtom = util:to_atom(App),
 	gen_server:call(?MODULE, {invoke, Client, Request, AppAtom}).
@@ -69,7 +73,7 @@ forward_request({request, Client, Request, App}) ->
 %%          {stop, Reason}
 %% --------------------------------------------------------------------
 init([{listener, Listen}, {web_service, WebService}]) ->
-	{ok, #state{apps=[{'localhost:8000',[#target{host="localhost",port=3000},#target{host="127.0.0.1",port=3000}], 1}],
+	{ok, #state{apps=[],
 		listener=Listen, web_service=WebService}}.
 
 %% --------------------------------------------------------------------
@@ -108,9 +112,11 @@ handle_call({add_app, {AppName, Targets}}, _From, #state{apps=AppList}=State) ->
 		 		end, Targets),
 	NewAppList = lists:merge(AppList, [{AppName, TargetList, 1}]),
 	{noreply, State#state{apps=NewAppList}};
+handle_call({remove_app, AppName}, _From, #state{apps=AppList}=State) ->
+	NewAppList = lists:keydelete(AppName, 1, AppList),
+	{noreply, State#state{apps=NewAppList}};
 handle_call({invoke, Client, Request, AppName}, _From, State) ->
 	{Target, NewState} = select_target(AppName, State),
-	io:format("Target = ~p~n",[Target]),
 	spawn(?MODULE, start_relay, [Client, Request, Target]),
 	{noreply, NewState};
 handle_call(_Msg, _From, State) ->

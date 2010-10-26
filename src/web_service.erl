@@ -81,6 +81,9 @@ handle_cast({update_app, [AppName | Params]}, State) ->
 handle_cast({add_app, [AppName | Params]}, State) ->
 	spawn(router, add_app, [{AppName, Params}]),
 	{noreply, State};
+handle_cast({remove_app, [AppName | _Params]}, State) ->
+	spawn(router, remove_app, [AppName]),
+	{noreply, State};
 handle_cast(stop, #state{listener=Listener}=State) ->
 	gen_tcp:close(Listener),
 	{stop, normal, State};
